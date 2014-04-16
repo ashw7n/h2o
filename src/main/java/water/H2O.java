@@ -5,10 +5,10 @@ import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.util.*;
-import java.util.concurrent.Future;
 
 import jsr166y.*;
 import water.Job.JobCancelledException;
+import water.discovery.ServiceAdvertiser;
 import water.nbhm.NonBlockingHashMap;
 import water.persist.*;
 import water.util.*;
@@ -50,6 +50,8 @@ public final class H2O {
   // Myself, as a Node in the Cloud
   public static H2ONode SELF = null;
   public static InetAddress SELF_ADDRESS;
+
+  public static ServiceAdvertiser serviceNode;
 
   public static String DEFAULT_ICE_ROOT() {
     String username = System.getProperty("user.name");
@@ -110,7 +112,13 @@ public final class H2O {
     //
     // Expect embeddedH2OConfig to be null if H2O is run standalone.
 
-    // Cleanly shutdown internal H2O services.
+      try {
+          serviceNode.close();
+      } catch (IOException e) {
+          //ignore
+      }
+
+      // Cleanly shutdown internal H2O services.
     if (apiIpPortWatchdog != null) {
       apiIpPortWatchdog.shutdown();
     }
@@ -761,6 +769,9 @@ public final class H2O {
   public static class OptArgs extends Arguments.Opt {
     public String name; // set_cloud_name_and_mcast()
     public String flatfile; // set_cloud_name_and_mcast()
+    public String zk_connection_string; //zookeeper connection url
+    public String zk_service_name; //figure cloud members from zookeeper
+    public String zk_service_path = "/h2O";
     public int baseport; // starting number to search for open ports
     public int port; // set_cloud_name_and_mcast()
     public String ip; // Named IP4/IP6 address instead of the default
@@ -804,6 +815,15 @@ public final class H2O {
     "\n" +
     "    -flatfile <flatFileName>\n" +
     "          Configuration file explicitly listing H2O cloud node members.\n" +
+    "\n" +
+    "    -zk_connection_string <zookeeper connection string>\n" +
+    "          Zookeeper connection string if using it for cloud node discovery\n" +
+    "\n" +
+    "    -zk_service_name <service name in zookeeper>\n" +
+    "          Service name in zookeeper/curator listing H20 cloud node members.\n" +
+    "\n" +
+    "    -zk_service_path <service path in zookeeper>\n" +
+    "          The path in zookeeper for services, the service_name fall under this root\n" +
     "\n" +
     "    -ip <ipAddressOfNode>\n" +
     "          IP address of this node.\n" +
@@ -994,9 +1014,12 @@ public final class H2O {
     }
 
     Log.info ("H2O cloud name: '" + NAME + "'");
-    Log.info("(v"+VERSION+") '"+NAME+"' on " + SELF+(OPT_ARGS.flatfile==null
-        ? (", discovery address "+CLOUD_MULTICAST_GROUP+":"+CLOUD_MULTICAST_PORT)
-            : ", static configuration based on -flatfile "+OPT_ARGS.flatfile));
+    Log.info("(v"+VERSION+") '"+NAME+"' on " + SELF+(OPT_ARGS.flatfile == null
+             ? OPT_ARGS.zk_connection_string == null
+                ? (", discovery address "+CLOUD_MULTICAST_GROUP+":"+CLOUD_MULTICAST_PORT)
+                : ", configuration based on -zk_service_name "+OPT_ARGS.zk_connection_string
+             : ", static configuration based on -flatfile " + OPT_ARGS.flatfile));
+
 
     Log.info("If you have trouble connecting, try SSH tunneling from your local machine (e.g., via port 55555):\n" +
             "  1. Open a terminal and run 'ssh -L 55555:localhost:"
@@ -1166,8 +1189,11 @@ public final class H2O {
     // Read a flatfile of allowed nodes
     if (embeddedConfigFlatfile != null) {
       STATIC_H2OS = parseFlatFileFromString(embeddedConfigFlatfile);
-    }
-    else {
+    } else if (OPT_ARGS.zk_connection_string != null) {
+        serviceNode = new ServiceAdvertiser(OPT_ARGS.zk_connection_string, OPT_ARGS.zk_service_path,
+                OPT_ARGS.zk_service_name, null, SELF_ADDRESS.getHostAddress(), UDP_PORT, "h20", true);
+        STATIC_H2OS = serviceNode.getNodes();
+    } else {
       STATIC_H2OS = parseFlatFile(OPT_ARGS.flatfile);
     }
 
